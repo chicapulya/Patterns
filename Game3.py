@@ -21,6 +21,16 @@ class Prototype(ABC):
     def clone(self):
         pass
 
+# Абстрактный класс для объектов, которые можно обновлять и рисовать
+class GameObject(ABC):
+    @abstractmethod
+    def update(self):
+        pass
+
+    @abstractmethod
+    def draw(self, screen):
+        pass
+
 # Singleton для управления ресурсами
 class ResourceManager:
     _instance = None
@@ -110,7 +120,7 @@ class BulletFactory:
             raise ValueError("Unknown bullet type")
 
 # Базовый класс сущности
-class Entity:
+class Entity(GameObject):
     def __init__(self, x, y):
         self.x = x
         self.y = y
@@ -124,13 +134,27 @@ class Entity:
     def move(self):
         pass
 
-    def draw(self):
+    def update(self):
+        self.move()
+
+    def draw(self, screen):
         pass
+
+# Абстрактный класс для рендеринга (Bridge)
+class EntityRenderer(ABC):
+    @abstractmethod
+    def render(self, screen, entity):
+        pass
+
+class CowboyRenderer(EntityRenderer):
+    def render(self, screen, entity):
+        screen.blit(entity.texture, (entity.x, entity.y))
 
 # Класс игрока
 class Cowboy(Entity):
-    def __init__(self, x, y):
+    def __init__(self, x, y, renderer=CowboyRenderer()):
         super().__init__(x, y)
+        self.renderer = renderer
         self.texture = ResourceManager().textures['cowboy']
         self.rect = pygame.Rect(x, y, 32, 32)
         self.bullets = []
@@ -144,26 +168,39 @@ class Cowboy(Entity):
         self.boost_duration = 0
         self.boost_active = False
         self.height = self.texture.get_height()
+        self._shoot_delegate = self._base_shoot
 
-    def move(self, keys):
-        if keys[pygame.K_LEFT]:
-            self.x -= self.speed * self.speed_boost
-        if keys[pygame.K_RIGHT]:
-            self.x += self.speed * self.speed_boost
-        if keys[pygame.K_UP]:
-            self.y -= self.speed * self.speed_boost
-        if keys[pygame.K_DOWN]:
-            self.y += self.speed * self.speed_boost
+    def move(self, keys=None, wasd_controls=None):
+        moved = False
+        if keys:
+            if keys[pygame.K_LEFT]:
+                self.x -= self.speed * self.speed_boost
+                moved = True
+            if keys[pygame.K_RIGHT]:
+                self.x += self.speed * self.speed_boost
+                moved = True
+            if keys[pygame.K_UP]:
+                self.y -= self.speed * self.speed_boost
+                moved = True
+            if keys[pygame.K_DOWN]:
+                self.y += self.speed * self.speed_boost
+                moved = True
+        if wasd_controls and not moved:
+            self.x += wasd_controls['move_x'] * self.speed * self.speed_boost
+            self.y += wasd_controls['move_y'] * self.speed * self.speed_boost
         self.x = max(0, min(self.x, WIDTH - self.rect.width))
         self.y = max(0, min(self.y, HEIGHT - self.height))
         self.update_rect()
 
-    def shoot(self):
+    def _base_shoot(self):
         if self.shoot_timer <= 0:
             bullet = BulletFactory.create_bullet("player", self.x + 16, self.y)
             self.bullets.append(bullet)
             self.shoot_timer = self.shoot_cooldown
         self.shoot_timer -= 1
+
+    def shoot(self):
+        self._shoot_delegate()
 
     def update_boost(self):
         if self.boost_active:
@@ -171,9 +208,22 @@ class Cowboy(Entity):
             if self.boost_duration <= 0:
                 self.shoot_cooldown = self.base_shoot_cooldown
                 self.boost_active = False
+                self._shoot_delegate = self._base_shoot
 
     def draw(self, screen):
-        screen.blit(self.texture, (self.x, self.y))
+        self.renderer.render(screen, self)
+
+# Декоратор для ускоренной стрельбы
+class SpeedBoostDecorator:
+    def __init__(self, cowboy):
+        self.cowboy = cowboy
+
+    def __call__(self):
+        if self.cowboy.shoot_timer <= 0:
+            bullet = BulletFactory.create_bullet("player", self.cowboy.x + 16, self.cowboy.y)
+            self.cowboy.bullets.append(bullet)
+            self.cowboy.shoot_timer = self.cowboy.shoot_cooldown // 2
+        self.cowboy.shoot_timer -= 1
 
 # Класс пули игрока
 class Bullet(Entity):
@@ -215,9 +265,10 @@ class Bandit(Entity, Prototype):
     def clone(self):
         return Bandit(self.x, self.y)
 
-    def move(self, time):
-        speed_increase = min(math.log1p(time / 60) * 0.25, self.max_speed - self.base_speed)
-        self.speed = self.base_speed + speed_increase
+    def move(self, time=None):
+        if time:
+            speed_increase = min(math.log1p(time / 60) * 0.25, self.max_speed - self.base_speed)
+            self.speed = self.base_speed + speed_increase
         self.y += self.speed
         if random.random() < 0.01:
             self.x += random.choice([-self.speed, self.speed])
@@ -240,9 +291,10 @@ class Eagle(Entity, Prototype):
     def clone(self):
         return Eagle(self.x, self.y)
 
-    def move(self, time):
-        speed_increase = min(math.log1p(time / 60) * 0.25, self.max_speed - self.base_speed)
-        self.speed = self.base_speed + speed_increase
+    def move(self, time=None):
+        if time:
+            speed_increase = min(math.log1p(time / 60) * 0.25, self.max_speed - self.base_speed)
+            self.speed = self.base_speed + speed_increase
         self.y += math.sin(self.angle) * self.speed
         self.x += self.speed
         self.angle += 0.1
@@ -284,6 +336,7 @@ class Booster(Entity, Prototype):
             cowboy.boost_duration = self.duration
             cowboy.shoot_cooldown = max(5, cowboy.base_shoot_cooldown - self.boost_value)
             cowboy.boost_active = True
+            cowboy._shoot_delegate = SpeedBoostDecorator(cowboy)
 
     def draw(self, screen):
         screen.blit(self.texture, (self.x, self.y))
@@ -313,6 +366,47 @@ class Heal(Entity, Prototype):
     def draw(self, screen):
         screen.blit(self.texture, (self.x, self.y))
 
+# Композит для управления группами объектов
+class CompositeGroup(GameObject):
+    def __init__(self):
+        self.children = []
+
+    def add(self, obj):
+        self.children.append(obj)
+
+    def remove(self, obj):
+        self.children.remove(obj)
+
+    def update(self):
+        for obj in self.children[:]:
+            obj.update()
+
+    def draw(self, screen):
+        for obj in self.children:
+            obj.draw(screen)
+
+# Адаптер для WASD ввода
+class WASDInput:
+    def read_input(self):
+        keys = pygame.key.get_pressed()
+        return {
+            'up': keys[pygame.K_w],
+            'down': keys[pygame.K_s],
+            'left': keys[pygame.K_a],
+            'right': keys[pygame.K_d]
+        }
+
+class InputAdapter:
+    def __init__(self, adaptee):
+        self.adaptee = adaptee
+
+    def get_controls(self):
+        raw = self.adaptee.read_input()
+        return {
+            'move_x': -1 if raw['left'] else (1 if raw['right'] else 0),
+            'move_y': -1 if raw['up'] else (1 if raw['down'] else 0)
+        }
+
 # Builder и Director для создания игрового состояния
 class GameStateBuilder:
     def __init__(self):
@@ -323,11 +417,20 @@ class GameStateBuilder:
         return self
 
     def set_enemies(self):
-        self.game_state['enemies'] = []
+        self.game_state['enemies'] = CompositeGroup()
+        # Create three wave groups
+        wave1 = CompositeGroup()
+        wave2 = CompositeGroup()
+        wave3 = CompositeGroup()
+        # Add waves to enemies
+        self.game_state['enemies'].add(wave1)
+        self.game_state['enemies'].add(wave2)
+        self.game_state['enemies'].add(wave3)
+        self.game_state['waves'] = [wave1, wave2, wave3]
         return self
 
     def set_boosters(self):
-        self.game_state['boosters'] = []
+        self.game_state['boosters'] = CompositeGroup()
         return self
 
     def set_eagle_bullets(self):
@@ -339,6 +442,7 @@ class GameStateBuilder:
         self.game_state['score'] = 0
         self.game_state['time'] = 0
         self.game_state['wave_phase'] = 0
+        self.game_state['current_wave'] = 0
         return self
 
     def set_game_over(self):
@@ -362,52 +466,47 @@ class GameDirector:
                 .set_game_over()
                 .build())
 
-# Основной игровой цикл
-def main():
-    title_font = pygame.font.SysFont("Arial", 48, bold=True)
-    text_font = pygame.font.SysFont("Arial", 24, bold=True)
+# Фасад для упрощения работы с игровым движком
+class GameEngineFacade:
+    def __init__(self):
+        self.resource_manager = ResourceManager.get_instance()
+        self.builder = GameStateBuilder()
+        self.director = GameDirector(self.builder)
+        self.bandit_factory = BanditFactory()
+        self.eagle_factory = EagleFactory()
+        self.speed_booster_factory = SpeedBoosterFactory()
+        self.heal_factory = HealFactory()
+        self.wasd_input = InputAdapter(WASDInput())
+        self.title_font = pygame.font.SysFont("Arial", 48, bold=True)
+        self.text_font = pygame.font.SysFont("Arial", 24, bold=True)
+        self.hp_texture = pygame.transform.scale(self.resource_manager.textures['hp'], (40, 20))
+        self.restart_button = pygame.Rect(WIDTH // 2 - 100, HEIGHT // 2 + 40, 200, 50)
 
-    hp_texture = pygame.transform.scale(ResourceManager().textures['hp'], (40, 20))
+    def start_new_game(self):
+        self.game_state = self.director.construct_game_state()
 
-    builder = GameStateBuilder()
-    director = GameDirector(builder)
-
-    def reset_game():
-        nonlocal game_state
-        game_state = director.construct_game_state()
-
-    game_state = director.construct_game_state()
-
-    bandit_factory = BanditFactory()
-    eagle_factory = EagleFactory()
-    speed_booster_factory = SpeedBoosterFactory()
-    heal_factory = HealFactory()
-
-    running = True
-    while running:
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                running = False
-            if event.type == pygame.MOUSEBUTTONDOWN and game_state['game_over']:
-                mouse_pos = pygame.mouse.get_pos()
-                if restart_button.collidepoint(mouse_pos):
-                    reset_game()
-
-        if not game_state['game_over']:
+    def update(self):
+        if not self.game_state['game_over']:
             keys = pygame.key.get_pressed()
-            game_state['cowboy'].move(keys)
+            wasd_controls = self.wasd_input.get_controls()
+            self.game_state['cowboy'].move(keys, wasd_controls)
             if keys[pygame.K_SPACE]:
-                game_state['cowboy'].shoot()
+                self.game_state['cowboy'].shoot()
 
-            game_state['cowboy'].update_boost()
+            self.game_state['cowboy'].update_boost()
 
-            game_state['spawn_timer'] -= 1
-            if game_state['spawn_timer'] <= 0:
-                spawn_interval = max(30, 60 - (game_state['time'] // 60))
-                game_state['spawn_timer'] = spawn_interval
+            self.game_state['spawn_timer'] -= 1
+            if self.game_state['spawn_timer'] <= 0:
+                spawn_interval = max(30, 60 - (self.game_state['time'] // 60))
+                self.game_state['spawn_timer'] = spawn_interval
 
-                game_state['wave_phase'] += 0.0005
-                wave_factor = (math.sin(game_state['wave_phase']) + 1) / 2
+                self.game_state['wave_phase'] += 0.0005
+                wave_factor = (math.sin(self.game_state['wave_phase']) + 1) / 2
+
+                # Select current wave (cycle through waves every 30 seconds)
+                wave_duration = 30 * 60  # 30 seconds in frames
+                self.game_state['current_wave'] = (self.game_state['time'] // wave_duration) % len(self.game_state['waves'])
+                current_wave = self.game_state['waves'][self.game_state['current_wave']]
 
                 if random.random() < 0.6:
                     max_bandits = 4
@@ -418,111 +517,137 @@ def main():
                         base_x = i * segment_width + segment_width // 2
                         spawn_x = base_x + random.randint(-segment_width // 4, segment_width // 4)
                         spawn_x = max(0, min(spawn_x, WIDTH - 32))
-                        game_state['enemies'].append(bandit_factory.create_enemy(spawn_x))
+                        enemy = self.bandit_factory.create_enemy(spawn_x)
+                        current_wave.add(enemy)
                 else:
-                    game_state['enemies'].append(eagle_factory.create_enemy())
+                    enemy = self.eagle_factory.create_enemy()
+                    current_wave.add(enemy)
 
-            game_state['time'] += 1
+            self.game_state['time'] += 1
 
-            for bullet in game_state['cowboy'].bullets[:]:
-                bullet.move()
+            for bullet in self.game_state['cowboy'].bullets[:]:
+                bullet.update()
                 if bullet.y < 0:
-                    game_state['cowboy'].bullets.remove(bullet)
+                    self.game_state['cowboy'].bullets.remove(bullet)
                 else:
-                    for enemy in game_state['enemies'][:]:
-                        if bullet.rect.colliderect(enemy.rect):
-                            enemy.hp -= 1 * game_state['cowboy'].damage_boost
-                            game_state['cowboy'].bullets.remove(bullet)
-                            if enemy.hp <= 0:
-                                game_state['enemies'].remove(enemy)
-                                game_state['score'] += 10
-                                base_drop_chance = 0.1
-                                time_factor = min(0.4, (game_state['time'] / 60) * 0.01)
-                                drop_chance = base_drop_chance + time_factor
-                                if random.random() < drop_chance:
-                                    if random.random() < 0.5:
-                                        game_state['boosters'].append(speed_booster_factory.create_booster(enemy.x, enemy.y))
-                                    else:
-                                        game_state['boosters'].append(heal_factory.create_booster(enemy.x, enemy.y))
-                            break
+                    # Check collisions with enemies in all waves
+                    for wave in self.game_state['enemies'].children[:]:
+                        for enemy in wave.children[:]:
+                            if bullet.rect.colliderect(enemy.rect):
+                                enemy.hp -= 1 * self.game_state['cowboy'].damage_boost
+                                self.game_state['cowboy'].bullets.remove(bullet)
+                                if enemy.hp <= 0:
+                                    wave.remove(enemy)
+                                    self.game_state['score'] += 10
+                                    base_drop_chance = 0.1
+                                    time_factor = min(0.4, (self.game_state['time'] / 60) * 0.01)
+                                    drop_chance = base_drop_chance + time_factor
+                                    if random.random() < drop_chance:
+                                        if random.random() < 0.5:
+                                            booster = self.speed_booster_factory.create_booster(enemy.x, enemy.y)
+                                            self.game_state['boosters'].add(booster)
+                                        else:
+                                            booster = self.heal_factory.create_booster(enemy.x, enemy.y)
+                                            self.game_state['boosters'].add(booster)
+                                break
 
-            for enemy in game_state['enemies'][:]:
-                enemy.move(game_state['time'])
-                if isinstance(enemy, Eagle):
-                    bullet = enemy.shoot()
-                    if bullet:
-                        game_state['eagle_bullets'].append(bullet)
-                if enemy.rect.colliderect(game_state['cowboy'].rect):
-                    game_state['cowboy'].hp -= 1
-                    game_state['enemies'].remove(enemy)
-                    if game_state['cowboy'].hp <= 0:
-                        game_state['game_over'] = True
+            self.game_state['enemies'].update()
+            for wave in self.game_state['enemies'].children[:]:
+                for enemy in wave.children[:]:
+                    if isinstance(enemy, Eagle):
+                        bullet = enemy.shoot()
+                        if bullet:
+                            self.game_state['eagle_bullets'].append(bullet)
+                    if enemy.rect.colliderect(self.game_state['cowboy'].rect):
+                        self.game_state['cowboy'].hp -= 1
+                        wave.remove(enemy)
+                        if self.game_state['cowboy'].hp <= 0:
+                            self.game_state['game_over'] = True
 
-            for bullet in game_state['eagle_bullets'][:]:
-                bullet.move()
+            for bullet in self.game_state['eagle_bullets'][:]:
+                bullet.update()
                 if bullet.y > HEIGHT:
-                    game_state['eagle_bullets'].remove(bullet)
-                elif bullet.rect.colliderect(game_state['cowboy'].rect):
-                    game_state['cowboy'].hp -= 1
-                    game_state['eagle_bullets'].remove(bullet)
-                    if game_state['cowboy'].hp <= 0:
-                        game_state['game_over'] = True
+                    self.game_state['eagle_bullets'].remove(bullet)
+                elif bullet.rect.colliderect(self.game_state['cowboy'].rect):
+                    self.game_state['cowboy'].hp -= 1
+                    self.game_state['eagle_bullets'].remove(bullet)
+                    if self.game_state['cowboy'].hp <= 0:
+                        self.game_state['game_over'] = True
 
-            for booster in game_state['boosters'][:]:
-                booster.move()
-                if game_state['cowboy'].rect.colliderect(booster.rect):
-                    booster.apply(game_state['cowboy'])
-                    game_state['boosters'].remove(booster)
+            self.game_state['boosters'].update()
+            for booster in self.game_state['boosters'].children[:]:
+                if self.game_state['cowboy'].rect.colliderect(booster.rect):
+                    booster.apply(self.game_state['cowboy'])
+                    self.game_state['boosters'].remove(booster)
                 elif booster.y >= HEIGHT - 64:
-                    game_state['boosters'].remove(booster)
+                    self.game_state['boosters'].remove(booster)
 
-            screen.fill((135, 206, 235))
+    def draw(self, screen):
+        screen.fill((135, 206, 235))
 
-            score_text = text_font.render(f"Score: {game_state['score']}", True, (0, 0, 0))
-            time_text = text_font.render(f"Time: {game_state['time'] // 60}", True, (0, 0, 0))
-            boost_text = text_font.render(f"Boost: {game_state['cowboy'].boost_duration // 60}", True,
-                                        (0, 255, 0)) if game_state['cowboy'].boost_active else text_font.render("Boost: 0", True, (0, 0, 0))
-            screen.blit(score_text, (10, 5))
-            screen.blit(time_text, (10, 30))
-            screen.blit(boost_text, (10, 55))
+        score_text = self.text_font.render(f"Score: {self.game_state['score']}", True, (0, 0, 0))
+        time_text = self.text_font.render(f"Time: {self.game_state['time'] // 60}", True, (0, 0, 0))
+        boost_text = self.text_font.render(f"Boost: {self.game_state['cowboy'].boost_duration // 60}", True,
+                                           (0, 255, 0)) if self.game_state[
+            'cowboy'].boost_active else self.text_font.render("Boost: 0", True, (0, 0, 0))
+        wave_text = self.text_font.render(f"Wave: {self.game_state['current_wave'] + 1}", True, (0, 0, 255))
+        screen.blit(score_text, (10, 5))
+        screen.blit(time_text, (10, 30))
+        screen.blit(boost_text, (10, 55))
+        screen.blit(wave_text, (10, 80))
 
-            for i in range(game_state['cowboy'].hp):
-                screen.blit(hp_texture, (10 + i * 45, 85))
+        for i in range(self.game_state['cowboy'].hp):
+            screen.blit(self.hp_texture, (10 + i * 45, 105))
 
-            game_state['cowboy'].draw(screen)
-            for bullet in game_state['cowboy'].bullets:
-                bullet.draw(screen)
-            for enemy in game_state['enemies']:
-                enemy.draw(screen)
-            for booster in game_state['boosters']:
-                booster.draw(screen)
-            for bullet in game_state['eagle_bullets']:
-                bullet.draw(screen)
+        self.game_state['cowboy'].draw(screen)
+        for bullet in self.game_state['cowboy'].bullets:
+            bullet.draw(screen)
+        self.game_state['enemies'].draw(screen)
+        self.game_state['boosters'].draw(screen)
+        for bullet in self.game_state['eagle_bullets']:
+            bullet.draw(screen)
 
-        if game_state['game_over']:
+        if self.game_state['game_over']:
             overlay = pygame.Surface((WIDTH, HEIGHT))
             overlay.set_alpha(200)
             overlay.fill((50, 50, 50))
             screen.blit(overlay, (0, 0))
 
-            game_over_text = title_font.render("Game Over", True, (255, 0, 0))
+            game_over_text = self.title_font.render("Game Over", True, (255, 0, 0))
             game_over_rect = game_over_text.get_rect(center=(WIDTH // 2, HEIGHT // 2 - 60))
             screen.blit(game_over_text, game_over_rect)
 
-            score_display = text_font.render(f"Final Score: {game_state['score']}", True, (255, 255, 255))
+            score_display = self.text_font.render(f"Final Score: {self.game_state['score']}", True, (255, 255, 255))
             score_rect = score_display.get_rect(center=(WIDTH // 2, HEIGHT // 2))
             screen.blit(score_display, score_rect)
 
-            restart_button = pygame.Rect(WIDTH // 2 - 100, HEIGHT // 2 + 40, 200, 50)
-            pygame.draw.rect(screen, (0, 255, 0), restart_button)
-            pygame.draw.rect(screen, (0, 0, 0), restart_button, 2)
-            restart_text = text_font.render("Restart", True, (0, 0, 0))
-            restart_rect = restart_text.get_rect(center=restart_button.center)
+            pygame.draw.rect(screen, (0, 255, 0), self.restart_button)
+            pygame.draw.rect(screen, (0, 0, 0), self.restart_button, 2)
+            restart_text = self.text_font.render("Restart", True, (0, 0, 0))
+            restart_rect = restart_text.get_rect(center=self.restart_button.center)
             screen.blit(restart_text, restart_rect)
 
+    def handle_events(self):
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                return False
+            if event.type == pygame.MOUSEBUTTONDOWN and self.game_state['game_over']:
+                mouse_pos = pygame.mouse.get_pos()
+                if self.restart_button.collidepoint(mouse_pos):
+                    self.start_new_game()
+        return True
+
+# Основной игровой цикл
+def main():
+    engine = GameEngineFacade()
+    engine.start_new_game()
+    running = True
+    while running:
+        running = engine.handle_events()
+        engine.update()
+        engine.draw(screen)
         pygame.display.flip()
         clock.tick(FPS)
-
     pygame.quit()
 
 if __name__ == "__main__":
